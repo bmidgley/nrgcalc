@@ -1,0 +1,9 @@
+{
+	"id": "com.pointmarker.nrgcalc",
+	"version": "0.0.2",
+	"vendor": "Pointmarker",
+	"type": "web",
+	"main": "index.html",
+	"title": "NRG Calc",
+	"uiRevision": 2
+}

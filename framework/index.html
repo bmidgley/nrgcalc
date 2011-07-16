@@ -1,0 +1,937 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, minimum-scale=1, maximum-scale=1" />
+    <title>NRG Calculator</title>
+    <link rel="stylesheet" href="stylesheets/jquery.mobile.css" />
+    <link rel="stylesheet" href="stylesheets/jqm-docs.css" />
+    <script src="phonegap-1.0.0.js"></script>
+    <script src="javascripts/jquery.js"></script>
+    <script src="javascripts/jquery.mobile.js"></script>
+    <script src="javascripts/dygraph-combined.js"></script>
+    <script src="javascripts/spine.js"></script>
+    <script src="javascripts/spine.local.js"></script>
+    <script src="javascripts/coffeekup.js"></script>
+    <script>var exports = this;</script>
+    <script>__bind = function(fn, me){ return function(){ return fn.apply(me, arguments); }; };</script>
+    <script>;(function () {
+      exports.Device = Spine.Model.setup("Device", ["scenario_id", "template_device_id", "suggestion_device_id", "name", "comment", "count", "rechargable", "min_burn", "max_burn", "on_bus_capacity", "off_bus_capacity", "operating_from", "operating_until", "units", "units_provided", "units_draw", "units_draw_charging", "capacity_unit_hours", "starting_fullness", "in_bus", "out_bus", "burner_btu", "current_unit_hours", "currently_operating", "units_committed"]);
+      Device.extend(Spine.Model.Local);
+      Device.extend({
+        print: function(label, all) {
+          var device, _i, _len, _results;
+          if (label == null) {
+            label = "devices";
+          }
+          console.log("-- " + label + " --");
+          _results = [];
+          for (_i = 0, _len = all.length; _i < _len; _i++) {
+            device = all[_i];
+            _results.push(device.print());
+          }
+          return _results;
+        }
+      });
+      Device.extend({
+        templates: function() {
+          return Device.select(function(d) {
+            return !(d.scenario_id != null);
+          });
+        }
+      });
+      Device.extend({
+        applyDraw: function(bus, h, drains, providers) {
+          var device, drain, e, pcopy, provider, slice, _i, _j, _len, _len2, _ref;
+          for (slice = 1; slice <= 10; slice++) {
+            for (_i = 0, _len = providers.length; _i < _len; _i++) {
+              device = providers[_i];
+              device.units_committed = 0;
+            }
+            drains.sort(function(a, b) {
+              return a.currentLevel() - b.currentLevel();
+            });
+            providers.sort(function(a, b) {
+              return a.currentLevel() - b.currentLevel();
+            });
+            pcopy = providers.slice(0);
+            provider = pcopy.pop();
+            for (_j = 0, _len2 = drains.length; _j < _len2; _j++) {
+              drain = drains[_j];
+              if (drain.can_operate_at(h)) {
+                e = drain.units_draw * ((_ref = drain.count) != null ? _ref : 1);
+                while (e > 0) {
+                  if (provider == null) {
+                    return drain;
+                  }
+                  e = provider.harvestWatts(e, drain, 10);
+                  if (e > 0) {
+                    provider = pcopy.pop();
+                  }
+                }
+              }
+            }
+          }
+          return null;
+        }
+      });
+      Device.include({
+        currentLevel: function() {
+          var _ref;
+          if (this.units !== "Watt") {
+            return 0;
+          }
+          if ((this.units_draw != null) || ((this.units_draw_charging != null) && this.in_bus !== this.out_bus)) {
+            return 0;
+          }
+          if (this.current_unit_hours == null) {
+            return 1.1;
+          }
+          return this.current_unit_hours / (this.capacity_unit_hours * ((_ref = this.count) != null ? _ref : 1));
+        }
+      });
+      Device.include({
+        print: function() {
+          return console.log("" + this.name);
+        }
+      });
+      Device.include({
+        addWatts: function(e, interval) {
+          if ((this.current_unit_hours != null) && (this.rechargable != null)) {
+            this.current_unit_hours += e / interval;
+            return this.current_unit_hours = Math.min(this.current_unit_hours, this.count * this.capacity_unit_hours);
+          }
+        }
+      });
+      Device.include({
+        harvestWatts: function(e, draw, interval) {
+          var available, s;
+          if (this.current_unit_hours != null) {
+            s = e / interval;
+            if (this.current_unit_hours > s) {
+              this.current_unit_hours -= s;
+              draw.addWatts(e, interval);
+              return 0;
+            } else {
+              this.current_unit_hours = 0;
+              return e;
+            }
+          }
+          available = this.count * this.units_provided - this.units_committed;
+          if (available > e) {
+            this.units_committed += e;
+            draw.addWatts(e, interval);
+            e = 0;
+          } else {
+            e -= available;
+            draw.addWatts(available, interval);
+            this.units_committed = this.count * this.units_provided;
+          }
+          return e;
+        }
+      });
+      Device.include({
+        sometimes_off: function() {
+          return (this.operating_from != null) || (this.min_burn != null);
+        }
+      });
+      Device.include({
+        can_operate_at: function(h) {
+          var skew;
+          if (this.operating_from == null) {
+            return true;
+          }
+          skew = 24 - this.operating_from;
+          return (this.operating_until + skew) % 24 > (h + skew) % 24;
+        }
+      });
+      Device.include({
+        operating_at: function(h) {
+          if (this.currently_operating === false) {
+            return false;
+          }
+          return this.can_operate_at(h);
+        }
+      });
+      Device.include({
+        startgraphing: function(a) {
+          var _ref;
+          if (this.min_burn) {
+            this.currently_operating = false;
+          }
+          if (this.capacity_unit_hours != null) {
+            a.push("" + this.name + (this.sometimes_off() ? ' level' : ''));
+            this.current_unit_hours = (this.count * this.capacity_unit_hours * ((_ref = this.starting_fullness) != null ? _ref : 100)) / 100;
+          }
+          if (this.sometimes_off()) {
+            return a.push("" + this.name + (this.capacity_unit_hours != null ? ' on' : ''));
+          }
+        }
+      });
+      Device.include({
+        graphpoint: function(a, h) {
+          var _ref;
+          if (this.capacity_unit_hours != null) {
+            a.push("" + (this.current_unit_hours / (this.capacity_unit_hours * ((_ref = this.count) != null ? _ref : 1))));
+          }
+          if (this.sometimes_off()) {
+            return a.push("" + (this.operating_at(h) ? 0.2 : 0.0));
+          }
+        }
+      });
+      Device.include({
+        propaneDraw: function(h) {
+          if (!this.operating_at(h)) {
+            return 0;
+          }
+          if (this.units === "BTU" && (this.units_draw != null)) {
+            return this.units_draw;
+          } else if (this.burner_btu != null) {
+            return this.burner_btu;
+          } else {
+            return 0;
+          }
+        }
+      });
+      Device.include({
+        harvestBTU: function(p) {
+          if (this.units !== "BTU") {
+            return 0;
+          }
+          if (this.current_unit_hours >= p) {
+            this.current_unit_hours -= p;
+          } else {
+            p = this.current_unit_hours;
+            this.current_unit_hours = 0;
+          }
+          return p;
+        }
+      });
+      Device.include({
+        scenario: function() {
+          return Scenario.find(this.scenario_id);
+        }
+      });
+      exports.Scenario = Spine.Model.setup("Scenario", ["name", "updated_at"]);
+      Scenario.extend(Spine.Model.Local);
+      Scenario.include({
+        devices: function() {
+          return Device.select(__bind(function(d) {
+            return d.scenario_id === this.id;
+          }, this));
+        }
+      });
+      Scenario.include({
+        addDeviceFromTemplate: function(template, count) {
+          if (count == null) {
+            count = 1;
+          }
+          return template.dup(true).updateAttributes({
+            scenario_id: this.id,
+            count: count
+          });
+        }
+      });
+      Scenario.include({
+        cdestroy: function() {
+          var t, _i, _len, _ref;
+          _ref = this.devices();
+          for (_i = 0, _len = _ref.length; _i < _len; _i++) {
+            t = _ref[_i];
+            t.destroy();
+          }
+          return this.destroy();
+        }
+      });
+      Scenario.include({
+        graphdata: function() {
+          var all_devices, bus, d, data, device, draining, electricals, h, legend, p, powerfail, propanefail, providing, row, timestr, _i, _j, _k, _l, _len, _len2, _len3, _len4, _ref;
+          all_devices = this.devices();
+          legend = ["Date"];
+          for (_i = 0, _len = all_devices.length; _i < _len; _i++) {
+            device = all_devices[_i];
+            device.startgraphing(legend);
+          }
+          data = legend.join(',') + "\n";
+          for (d = 1; d <= 4; d++) {
+            for (h = 0; h <= 23; h++) {
+              timestr = "2011-06-0" + d + " " + h + ":00";
+              row = [timestr];
+              console.log(timestr);
+              for (_j = 0, _len2 = all_devices.length; _j < _len2; _j++) {
+                device = all_devices[_j];
+                device.graphpoint(row, h);
+              }
+              data += row.join(',') + "\n";
+              powerfail = {};
+              propanefail = {};
+              p = 0;
+              for (_k = 0, _len3 = all_devices.length; _k < _len3; _k++) {
+                device = all_devices[_k];
+                p += device.propaneDraw(h);
+              }
+              for (_l = 0, _len4 = all_devices.length; _l < _len4; _l++) {
+                device = all_devices[_l];
+                p -= device.harvestBTU(p);
+              }
+              if (p > 0) {
+                propanefail[timestr] = true;
+              }
+              electricals = (function() {
+                var _len5, _m, _results;
+                _results = [];
+                for (_m = 0, _len5 = all_devices.length; _m < _len5; _m++) {
+                  device = all_devices[_m];
+                  if (device.units === "Watt") {
+                    _results.push(device);
+                  }
+                }
+                return _results;
+              })();
+              for (bus = 0; bus <= 5; bus++) {
+                draining = (function() {
+                  var _len5, _m, _results;
+                  _results = [];
+                  for (_m = 0, _len5 = electricals.length; _m < _len5; _m++) {
+                    device = electricals[_m];
+                    if (device.in_bus === bus) {
+                      _results.push(device);
+                    }
+                  }
+                  return _results;
+                })();
+                providing = (function() {
+                  var _len5, _m, _results;
+                  _results = [];
+                  for (_m = 0, _len5 = electricals.length; _m < _len5; _m++) {
+                    device = electricals[_m];
+                    if (device.out_bus === bus) {
+                      _results.push(device);
+                    }
+                  }
+                  return _results;
+                })();
+                if (draining.length > 0 || providing.length > 0) {
+                                    if ((_ref = powerfail[timestr]) != null) {
+                    _ref;
+                  } else {
+                    powerfail[timestr] = Device.applyDraw(bus, h, draining, providing);
+                  };
+                }
+              }
+            }
+          }
+          return data;
+        }
+      });
+      Scenario.include({
+        annotations: function() {
+          return [];
+        }
+      });
+      Device.extend({
+        indexView: function(devicelist) {
+          return CoffeeKup.render((function() {
+            var d, _i, _len, _ref, _results;
+            _ref = this.devices;
+            _results = [];
+            for (_i = 0, _len = _ref.length; _i < _len; _i++) {
+              d = _ref[_i];
+              _results.push(li(function() {
+                var count;
+                count = (d.count != null) && d.count > 1 ? " (" + d.count + ")" : "";
+                return a({
+                  "class": "devices",
+                  mid: "" + d.id,
+                  href: "#" + d.id
+                }, "" + d.name + " " + count);
+              }));
+            }
+            return _results;
+          }), {
+            context: {
+              devices: devicelist
+            }
+          });
+        }
+      });
+      Device.extend({
+        selectView: function(devicelist) {
+          if (devicelist == null) {
+            devicelist = Device.templates();
+          }
+          return CoffeeKup.render((function() {
+            var d, _i, _len, _ref, _results;
+            _ref = this.devices;
+            _results = [];
+            for (_i = 0, _len = _ref.length; _i < _len; _i++) {
+              d = _ref[_i];
+              _results.push(option({
+                value: "" + d.id
+              }, "" + d.name));
+            }
+            return _results;
+          }), {
+            context: {
+              devices: devicelist
+            }
+          });
+        }
+      });
+      Device.include({
+        showView: function() {
+          return CoffeeKup.render((function() {
+            return div({
+              "data-role": "page",
+              id: "" + this.device.id,
+              "data-url": "" + this.device.id
+            }, function() {
+              div({
+                "data-role": "header"
+              }, function() {
+                a({
+                  href: "#" + this.device.scenario_id,
+                  "data-icon": "arrow-l",
+                  "data-rel": "back",
+                  "data-iconpos": "notext"
+                });
+                h1("" + this.device.name);
+                return a({
+                  href: "#menu1",
+                  "data-direction": "back",
+                  "class": 'updatedevice',
+                  mid: "" + this.device.id
+                }, "Update");
+              });
+              div({
+                "data-role": "content"
+              }, function() {
+                return div({
+                  "data-role": "fieldcontain"
+                }, function() {
+                  var attr, _i, _len, _ref, _results;
+                  _ref = Device.attributes;
+                  _results = [];
+                  for (_i = 0, _len = _ref.length; _i < _len; _i++) {
+                    attr = _ref[_i];
+                    if ((this.device[attr] != null) && !attr.match(/_id/)) {
+                      label({
+                        "for": "" + this.device.id + "-" + attr
+                      }, "" + attr + ": ");
+                      _results.push(input({
+                        type: "text",
+                        name: "" + this.device.id + "-" + attr,
+                        id: "" + this.device.id + "-" + attr,
+                        value: "" + this.device[attr]
+                      }));
+                    }
+                  }
+                  return _results;
+                });
+              });
+              return div({
+                "data-role": "footer"
+              }, function() {
+                return a({
+                  href: "#menu1",
+                  "data-role": "button",
+                  mid: "" + this.device.id,
+                  "class": "deletedevice"
+                }, "Delete");
+              });
+            });
+          }), {
+            context: {
+              device: this
+            }
+          });
+        }
+      });
+      Device.include({
+        liView: function() {
+          return CoffeeKup.render((function() {
+            return li({
+              "data-theme": "c",
+              "class": "ui-btn ui-btn-icon-right ui-li ui-btn-down-c ui-btn-up-c"
+            }, function() {
+              return div({
+                "class": "ui-btn-inner ui-li"
+              }, function() {
+                div({
+                  "class": "ui-btn-text"
+                }, function() {
+                  return a({
+                    "class": "devices ui-link-inherit",
+                    mid: "" + this.device.id,
+                    href: "#" + this.device.id
+                  }, "" + this.device.name);
+                });
+                return span({
+                  "class": "ui-icon ui-icon-arrow-r"
+                });
+              });
+            });
+          }), {
+            context: {
+              device: this
+            }
+          });
+        }
+      });
+      Scenario.extend({
+        indexView: function() {
+          return CoffeeKup.render(function() {
+            return Scenario.each(function(s) {
+              return li({
+                "data-theme": "c",
+                "class": "ui-btn ui-btn-icon-right ui-li ui-btn-down-c ui-btn-up-c"
+              }, function() {
+                return div({
+                  "class": "ui-btn-inner ui-li"
+                }, function() {
+                  div({
+                    "class": "ui-btn-text"
+                  }, function() {
+                    return a({
+                      "class": "scenarios ui-link-inherit",
+                      mid: "" + s.id,
+                      href: "#" + s.id
+                    }, "" + s.name);
+                  });
+                  return span({
+                    "class": "ui-icon ui-icon-arrow-r"
+                  });
+                });
+              });
+            });
+          });
+        }
+      });
+      Scenario.include({
+        showView: function() {
+          return CoffeeKup.render((function() {
+            return div({
+              "data-role": "page",
+              id: "" + this.scenario.id,
+              "data-url": "" + this.scenario.id
+            }, function() {
+              div({
+                "data-role": "header"
+              }, function() {
+                a({
+                  href: "#menu1",
+                  "data-icon": "home",
+                  "data-rel": "back",
+                  "data-iconpos": "notext"
+                });
+                h1("" + this.scenario.name);
+                return a({
+                  href: "#newdevice",
+                  "class": "ui-btn-right"
+                }, "+");
+              });
+              div({
+                "data-role": "content"
+              }, function() {
+                div({
+                  "class": "content-secondary"
+                }, function() {
+                  return ul({
+                    "data-role": "listview"
+                  }, "" + this.dlist);
+                });
+                return div({
+                  "class": "content-primary",
+                  id: "" + this.scenario.id + "-graphdiv"
+                });
+              });
+              return div({
+                "data-role": "footer"
+              }, function() {
+                return a({
+                  href: "#menu1",
+                  "data-role": "button",
+                  mid: "" + this.scenario.id,
+                  "class": "deletescenario"
+                }, "Delete this scenario");
+              });
+            });
+          }), {
+            context: {
+              scenario: this,
+              dlist: Device.indexView(this.devices())
+            }
+          });
+        }
+      });
+      exports.Devices = Spine.Controller.create({
+        init: function() {
+          Device.bind("refresh change", this.proxy(this.render));
+          this.render();
+          return $('.savedevice').click(__bind(function(s) {
+            var d;
+            s = Scenario.find($('#scenario_id').val());
+            d = Device.find($('#device-template').val());
+            s.addDeviceFromTemplate(d);
+            $("#" + s.id + " ul").append(d.liView()).page();
+            this.deviceclick();
+            return true;
+          }, this));
+        },
+        deviceclick: function() {
+          $('.devices').unbind('click.view');
+          return $('.devices').bind('click.view', function(s) {
+            var device, sid;
+            sid = this.attributes['mid'].value;
+            device = Device.find(sid);
+            $("#" + sid).remove();
+            $("body").append(device.showView());
+            $("#" + sid).page();
+            $('.updatedevice').click(function(s) {
+              var attr, v, _i, _len, _ref;
+              sid = this.attributes['mid'].value;
+              device = Device.find(sid);
+              _ref = Device.attributes;
+              for (_i = 0, _len = _ref.length; _i < _len; _i++) {
+                attr = _ref[_i];
+                v = $("#" + sid + "-" + attr).val();
+                if (v != null) {
+                  device.updateAttribute(attr, v);
+                }
+              }
+              return device.scenario().updateAttribute({
+                updated_at: new Date()
+              });
+            });
+            $('.deletedevice').click(function(s) {
+              sid = this.attributes['mid'].value;
+              device = Device.find(sid);
+              if (confirm("Remove device '" + device.name + "'?")) {
+                $("[mid = \"" + device.id + "\"]").remove();
+                device.destroy();
+                return true;
+              } else {
+                return false;
+              }
+            });
+            return true;
+          });
+        },
+        render: function() {}
+      });
+      exports.Scenarios = Spine.Controller.create({
+        init: function() {
+          Scenario.bind("refresh change", this.proxy(this.render));
+          this.render();
+          return $('.savescenario').click(function(s) {
+            Scenario.create({
+              name: $('#scenario_name').val()
+            });
+            return true;
+          });
+        },
+        render: function() {
+          $('#scenarios').html(Scenario.indexView());
+          $("#device-template").html(Device.selectView());
+          return $('.scenarios').click(function(s) {
+            var scenario, sid;
+            sid = this.attributes['mid'].value;
+            scenario = Scenario.find(sid);
+            $("#" + sid).remove();
+            $("body").append(scenario.showView());
+            App.devices.deviceclick();
+            $('#scenario_id').val(sid);
+            exports.gph = new Dygraph(document.getElementById(scenario.id + '-graphdiv'), scenario.graphdata(), {
+              width: 550,
+              height: 550,
+              drawPoints: true,
+              fillGraph: true,
+              pointSize: 2,
+              drawCallback: __bind(function(g, is_initial) {
+                if (is_initial) {
+                  return g.setAnnotations(scenario.annotations());
+                }
+              }, this)
+            });
+            $('.deletescenario').click(function(s) {
+              sid = this.attributes['mid'].value;
+              scenario = Scenario.find(sid);
+              if (confirm("Delete scenario '" + scenario.name + "'?")) {
+                scenario.cdestroy();
+                return true;
+              } else {
+                return false;
+              }
+            });
+            return true;
+          });
+        }
+      });
+      exports.NrgApp = Spine.Controller.create({
+        el: $("body"),
+        elements: {
+          "#scenarios": "scenariosEl",
+          "#devices": "devicesEl"
+        },
+        init: function() {
+          var device0, device1, device10, device11, device12, device2, device3, device3a, device4, device4a, device4b, device5, device6, device7, device8, device9, scenario1;
+          Device.fetch();
+          Scenario.fetch();
+          Device.each(function(d) {
+            if (d.scenario_id === void 0) {
+              return d.destroy();
+            }
+          });
+          device0 = Device.create({
+            name: "Customizable Device",
+            count: 1,
+            rechargable: 1,
+            operating_from: 15,
+            operating_until: 20,
+            units: "Watt",
+            units_provided: 45,
+            units_draw: 20,
+            capacity_unit_hours: 60,
+            in_bus: 1,
+            out_bus: 1
+          });
+          device1 = Device.create({
+            name: "12v LED Light",
+            count: 1,
+            operating_from: 21,
+            operating_until: 1,
+            units: "Watt",
+            units_draw: 1.3,
+            in_bus: 1
+          });
+          device2 = Device.create({
+            name: "12v Incandescent Light",
+            count: 1,
+            operating_from: 21,
+            operating_until: 1,
+            units: "Watt",
+            units_draw: 13,
+            suggestion_device_id: device1.id,
+            in_bus: 1
+          });
+          device3 = Device.create({
+            name: "60Ah Deep-cycle Battery",
+            count: 1,
+            rechargable: 1,
+            units: "Watt",
+            units_draw_charging: 90,
+            capacity_unit_hours: 720,
+            starting_fullness: 100,
+            in_bus: 1,
+            out_bus: 1
+          });
+          device3a = Device.create({
+            name: "16000 mAh Mobile Battery",
+            count: 1,
+            rechargable: 1,
+            units: "Watt",
+            units_draw: 5,
+            capacity_unit_hours: 80,
+            starting_fullness: 100,
+            in_bus: 1,
+            out_bus: 2
+          });
+          device4 = Device.create({
+            name: "HP Touchpad",
+            count: 1,
+            rechargable: 1,
+            units: "Watt",
+            units_draw: 3,
+            units_draw_charging: 10,
+            capacity_unit_hours: 60,
+            in_bus: 1
+          });
+          device4a = Device.create({
+            name: "HP Palm Pre 3",
+            count: 1,
+            rechargable: 1,
+            units: "Watt",
+            units_draw: 0.1,
+            units_draw_charging: 1,
+            capacity_unit_hours: 5,
+            in_bus: 1
+          });
+          device4b = Device.create({
+            name: "10w Tablet",
+            count: 1,
+            rechargable: 1,
+            units: "Watt",
+            units_draw: 3,
+            units_draw_charging: 10,
+            capacity_unit_hours: 60,
+            in_bus: 1
+          });
+          device5 = Device.create({
+            name: "Macbook Air",
+            count: 1,
+            rechargable: 1,
+            operating_from: 15,
+            operating_until: 2,
+            units: "Watt",
+            units_draw: 5,
+            suggestion_device_id: device4.id,
+            capacity_unit_hours: 30,
+            in_bus: 1
+          });
+          device6 = Device.create({
+            name: "Powerbook",
+            count: 1,
+            rechargable: 1,
+            operating_from: 15,
+            operating_until: 20,
+            units: "Watt",
+            units_draw: 20,
+            suggestion_device_id: device5.id,
+            capacity_unit_hours: 60,
+            in_bus: 1
+          });
+          device7 = Device.create({
+            name: "10w Solar Panel",
+            count: 1,
+            operating_from: 10,
+            operating_until: 17,
+            units: "Watt",
+            units_provided: 10,
+            out_bus: 1
+          });
+          device8 = Device.create({
+            name: "1000w Generator",
+            operating_from: 10,
+            operating_until: 20,
+            units: "Watt",
+            units_provided: 1000,
+            min_burn: 1000,
+            max_burn: 1500,
+            capacity_unit_hours: 10000,
+            on_bus_capacity: 0.50,
+            off_bus_capacity: 1.0,
+            out_bus: 1
+          });
+          device9 = Device.create({
+            name: "High-efficiency Electric Fridge",
+            units: "Watt",
+            units_draw: 7,
+            in_bus: 1
+          });
+          device10 = Device.create({
+            name: "Propane Fridge",
+            suggestion_device_id: device8.id,
+            units: "Watt",
+            units_draw: 0.1,
+            burner_btu: 600,
+            suggestion_device_id: device9.id,
+            in_bus: 1
+          });
+          device11 = Device.create({
+            name: "Propane Heater with Electric Fan",
+            units: "Watt",
+            units_draw: 5,
+            burner_btu: 1000,
+            operating_from: 19,
+            operating_until: 6,
+            in_bus: 1
+          });
+          device12 = Device.create({
+            name: "30lb/7.5g Propane Tank",
+            units: "BTU",
+            capacity_unit_hours: 687000,
+            comment: "91,600 BTU per gallon of propane",
+            out_bus: 1
+          });
+          if (Scenario.count() < 1) {
+            scenario1 = Scenario.create({
+              name: "Sample scenario"
+            });
+            scenario1.addDeviceFromTemplate(device4);
+            scenario1.addDeviceFromTemplate(device2, 3);
+            scenario1.addDeviceFromTemplate(device3);
+            scenario1.addDeviceFromTemplate(device7);
+            scenario1.addDeviceFromTemplate(device6);
+            scenario1.addDeviceFromTemplate(device11);
+            scenario1.addDeviceFromTemplate(device12, 2);
+          }
+          this.scenarios = Scenarios.init({
+            el: this.scenariosEl
+          });
+          return this.devices = Devices.init({
+            el: this.devicesEl
+          });
+        }
+      });
+      return $(function() {
+        return exports.App = NrgApp.init();
+      });
+    })();</script>
+  </head>
+  <body>
+    <div data-role="page" id="menu1">
+      <div data-role="header">
+        <h1>NRG Scenarios</h1>
+        <a href="#newscenario" class="ui-btn-right">+</a>
+      </div>
+      <div data-role="content">
+        <div class="content-secondary">
+          <ul id="scenarios" data-role="listview"></ul>
+        </div>
+        <div class="content-primary">
+          <h2>NRG Energy calculator</h2>
+          <h4>Estimate and predict energy usage and reserves using a handy graphing calculator</h4>
+          <ul>
+            <li>Provides settings for common energy sources: battery, propane, generators</li>
+            <li>Gives you settings for common users of energy: tablet, fridge, laptop, lights</li>
+            <li>Allows you to customize the common devices above</li>
+            <li>Allows you to create new devices with custom combinations of attributes</li>
+            <li>Allows you to tweak the energy requirements of mobile devices to match your own usage</li>
+          </ul>
+          <h4>Use it to...</h4>
+          <ul>
+            <li>Plan the use of mobile devices like a tablet combined with extended batteries</li>
+            <li>Estimate your RV energy use</li>
+            <li>Plan for upgrades to become more energy efficient and independent</li>
+            <li>Remove the guesswork from how much fuel you might need</li>
+          </ul>
+          <h4>Get started now</h4>
+          <ul>
+            <li>Try out the sample scenario</li>
+            <li>Create a new scenario (+ button above) and add your own custom device list</li>
+            <li>More than one of something? Add a device multiple times or change its count attribute</li>
+            <li>Switch between scenarios and compare the results</li>
+          </ul>
+          <p>Brad Midgley bmidgley@gmail.com</p>
+        </div>
+      </div>
+    </div>
+    <div data-role="page" id="newscenario">
+      <div data-role="header">
+        <a href="#menu1" data-icon="delete" data-rel="back" data-iconpos="notext"></a>
+        <h1>New scenario</h1>
+        <a href="#menu1" class="savescenario" data-rel="back">Save</a>
+      </div>
+      <div data-role="content">
+        <div data-role="fieldcontain">
+          <label for="name">Scenario name:</label>
+          <input type="text" name="scenario_name" id="scenario_name" value="New scenario" />
+        </div>
+      </div>
+    </div>
+    <div data-role="page" id="newdevice">
+      <div data-role="header">
+        <a href="#scenario" data-icon="delete" data-rel="back" data-iconpos="notext"></a>
+        <h1>New device</h1>
+        <a href="#scenario" class="savedevice" data-rel="back">Save</a>
+      </div>
+      <div data-role="content">
+        <div data-role="fieldcontain">
+          <label for="Type" class="select">Device type:</label>
+          <select name="device-template" id="device-template"></select>
+          <input type="hidden" id="scenario_id" />
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
